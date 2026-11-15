@@ -108,10 +108,13 @@ class Tickets:
             restored = []
             for row in rows:
                 payload = json.loads(row["payload"])
-                if payload.get("startup") != startup:
-                    continue
                 ticket = self.get(row["subject"], db)
-                if ticket["snapshot"].get("startup_pending") != startup:
+                # Restore any snapshot still held in staging. An earlier startup
+                # may have crashed before its own finish_startup ran; the current
+                # owner is the only process allowed to resolve that handoff, and
+                # its own staged records are restored in the same pass.
+                pending = ticket["snapshot"].get("startup_pending")
+                if pending is None or pending != payload.get("startup"):
                     continue
                 db.execute("UPDATE tickets SET snapshot=? WHERE id=?",
                            (canonical(payload["snapshot"]), ticket["id"]))

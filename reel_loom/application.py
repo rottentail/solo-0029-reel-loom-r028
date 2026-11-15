@@ -25,6 +25,11 @@ class Application:
         self.settings = settings.prepare()
         self.lock = InstanceLock(settings.root)
         self.renderer = None
+        self.recovery = {"interrupted": 0}
+        # Take the workspace lock before touching any persisted state. Recovery
+        # rewrites tickets left in 'running', so a process that fails to become
+        # the owner must never run it and disturb the service still encoding.
+        self.lock.acquire()
         try:
             self.db = Database(settings.root)
             self.blobs = BlobStore(settings.root, self.db)
@@ -47,15 +52,17 @@ class Application:
             with self.db.write_unit() as db:
                 self.db.event(db, self.lock.token, "startup_opened", {"owner": self.lock.owner()})
             self.recovery = self.tickets.recover(self.lock.token)
-            self.lock.acquire()
             self.tickets.finish_startup(self.lock.token)
             self.renderer = Renderer(settings, self.blobs, self.tickets, self.planner, self.processes, self.artifacts)
             if start_workers:
                 self.renderer.start()
         except BaseException as exc:
             if hasattr(self, "db"):
-                with self.db.write_unit() as db:
-                    self.db.event(db, self.lock.token, "startup_refused", {"reason": str(exc)[:300]})
+                try:
+                    with self.db.write_unit() as db:
+                        self.db.event(db, self.lock.token, "startup_refused", {"reason": str(exc)[:300]})
+                except BaseException:
+                    pass
             self.close()
             raise
 
@@ -67,6 +74,7 @@ class Application:
     def close(self):
         if self.renderer is not None:
             self.renderer.close()
+            self.renderer = None
         self.lock.close()
 
     def __enter__(self):
